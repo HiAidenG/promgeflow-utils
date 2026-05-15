@@ -38,6 +38,16 @@ else
     git clone "$REPO_URL" "$REPO_DIR"
 fi
 
+# CONJScan models — clone here on the login node, since compute nodes
+# in the SLURM job don't have git available.
+CONJ_DIR="$INSTALL_DIR/conjscan_models/CONJ"
+if [[ -d "$CONJ_DIR/.git" ]]; then
+    echo "[promgeflow] CONJScan already cloned, skipping"
+else
+    git clone https://github.com/macsy-models/CONJScan.git "$CONJ_DIR"
+fi
+( cd "$CONJ_DIR" && git checkout d5fc1e3724362cb14c03a6e2f6de879bbdf3f64e )
+
 # ---------------------------------------------------------------------------
 # 2. Conda env with nextflow
 # ---------------------------------------------------------------------------
@@ -128,13 +138,8 @@ wget -c http://eggnog6.embl.de/download/emapperdb-5.0.2/eggnog.taxa.tar.gz
 [[ -f eggnog_proteins.dmnd ]]   || gunzip -f eggnog_proteins.dmnd.gz
 tar xvzf eggnog.taxa.tar.gz
 
-# --- 2) CONJScan models (~50 MB) -----------------------------------------
-cd "\$ROOT/conjscan_models"
-if [[ ! -d CONJ ]]; then
-    git clone https://github.com/macsy-models/CONJScan.git CONJ
-fi
-cd CONJ
-git checkout d5fc1e3724362cb14c03a6e2f6de879bbdf3f64e
+# --- 2) CONJScan models — cloned by the install script on the login node;
+#        compute nodes don't have git.
 
 # --- 3) Recombinase HMMs (~1.7 MB) ---------------------------------------
 cd "\$ROOT/recombinase_models"
