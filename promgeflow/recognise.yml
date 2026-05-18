@@ -1,0 +1,14 @@
+name: recognise
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10
+  - pip
+  - git
+  # Pinned to match current main dockerfile (mapseq 1.2.6, fetchmgs 2.1.2).
+  - prodigal
+  - mapseq=1.2.6
+  - fetchmgs=2.1.2
+  - pip:
+      - git+https://github.com/grp-bork/reCOGnise.git@main

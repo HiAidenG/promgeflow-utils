@@ -19,13 +19,18 @@ ENV_NAME="${PROMGE_ENV:-promgeflow}"
 NEXTFLOW_VERSION="25.10.4"
 REPO_URL="https://github.com/grp-bork/proMGEflow.git"
 
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RECOGNISE_YML="$SELF_DIR/promgeflow/recognise.yml"
+
 INSTALL_DIR="$(readlink -m "$INSTALL_DIR")"
 REPO_DIR="$INSTALL_DIR/proMGEflow"
 LOG_DIR="$INSTALL_DIR/logs"
+RECOGNISE_ENV_PREFIX="$INSTALL_DIR/recognise_env"
 
-echo "[promgeflow] install dir: $INSTALL_DIR"
-echo "[promgeflow] repo dir:    $REPO_DIR"
-echo "[promgeflow] conda env:   $ENV_NAME"
+echo "[promgeflow] install dir:    $INSTALL_DIR"
+echo "[promgeflow] repo dir:       $REPO_DIR"
+echo "[promgeflow] conda env:      $ENV_NAME"
+echo "[promgeflow] recognise env:  $RECOGNISE_ENV_PREFIX"
 
 mkdir -p "$INSTALL_DIR"/{emapper_db,conjscan_models,recombinase_models,recognise_markers,cluster_ref_seqs}
 mkdir -p "$LOG_DIR"
@@ -78,6 +83,31 @@ else
     echo "[promgeflow] creating conda env '$ENV_NAME' with nextflow=$NEXTFLOW_VERSION"
     conda create -y -n "$ENV_NAME" -c bioconda -c conda-forge "nextflow=$NEXTFLOW_VERSION"
 fi
+
+# ---------------------------------------------------------------------------
+# 2b. reCOGnise conda env (replaces the unreliable ghcr.io/grp-bork/recognise
+#     container). Built here on the login node because the env's pip layer
+#     git-clones reCOGnise — compute nodes don't have git.
+# ---------------------------------------------------------------------------
+[[ -f "$RECOGNISE_YML" ]] || { echo "[promgeflow] recognise env yml not found: $RECOGNISE_YML" >&2; exit 1; }
+
+if [[ -d "$RECOGNISE_ENV_PREFIX/conda-meta" ]]; then
+    echo "[promgeflow] recognise env already exists at $RECOGNISE_ENV_PREFIX"
+else
+    echo "[promgeflow] creating recognise env at $RECOGNISE_ENV_PREFIX"
+    if command -v mamba >/dev/null 2>&1; then
+        mamba env create -p "$RECOGNISE_ENV_PREFIX" -f "$RECOGNISE_YML"
+    else
+        conda env create -p "$RECOGNISE_ENV_PREFIX" -f "$RECOGNISE_YML"
+    fi
+fi
+
+# Sanity check: the entry points the nextflow processes will invoke.
+for bin in recognise prodigal mapseq fetchMGs; do
+    if [[ ! -x "$RECOGNISE_ENV_PREFIX/bin/$bin" ]]; then
+        echo "[promgeflow] WARNING: $bin not found in $RECOGNISE_ENV_PREFIX/bin" >&2
+    fi
+done
 
 # ---------------------------------------------------------------------------
 # 3. Write params.yml pointing at our database dirs
@@ -176,15 +206,17 @@ fi
 
 cat <<EOF
 
-  install:   $INSTALL_DIR
-  repo:      $REPO_DIR
-  databases: $INSTALL_DIR/{emapper_db,conjscan_models,recombinase_models,recognise_markers,cluster_ref_seqs}
-             (downloads running via SLURM)
-  params:    $PARAMS_FILE
-  logs:      $LOG_DIR
+  install:       $INSTALL_DIR
+  repo:          $REPO_DIR
+  databases:     $INSTALL_DIR/{emapper_db,conjscan_models,recombinase_models,recognise_markers,cluster_ref_seqs}
+                 (downloads running via SLURM)
+  params:        $PARAMS_FILE
+  recognise env: $RECOGNISE_ENV_PREFIX
+  logs:          $LOG_DIR
 
 To run the workflow once databases finish:
   module load devel/miniforge
+  module load system/singularity/3.11.3
   conda activate $ENV_NAME
   bash $INSTALL_DIR/run_promgeflow.sh {PARAMS}
 EOF

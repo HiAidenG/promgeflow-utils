@@ -139,6 +139,20 @@ if [[ -f "${SCRIPT_DIR}/mgexpose.yml" ]]; then
   echo ">> mgexpose conda env yaml: $MGEXPOSE_ENV_YAML"
 fi
 
+# ---------- recognise pre-built conda env ----------
+# Built by install_promgeflow.sh on the login node (compute nodes can't
+# git-clone, which the env's pip layer needs). hpc.config falls back to the
+# recognise.yml in CWD if this isn't exported, but on slurm we always want the
+# pre-built prefix.
+if [[ -d "${SCRIPT_DIR}/recognise_env/conda-meta" ]]; then
+  export RECOGNISE_CONDA_ENV="${SCRIPT_DIR}/recognise_env"
+  echo ">> recognise conda env:     $RECOGNISE_CONDA_ENV"
+else
+  echo ">> WARNING: ${SCRIPT_DIR}/recognise_env not found." >&2
+  echo "            Re-run install_promgeflow.sh, or the recognise step will" >&2
+  echo "            try to build the env on a compute node (needs git)." >&2
+fi
+
 # ---------- singularity cache ----------
 # --singularity-cachedir wins; otherwise an already-exported NXF_SINGULARITY_CACHEDIR
 # is honoured; otherwise nextflow.config falls back to $HOME/.singularity_cache.
