@@ -16,6 +16,7 @@ set -euo pipefail
 
 INSTALL_DIR="${1:-promgeflow}"
 ENV_NAME="${PROMGE_ENV:-promgeflow}"
+NEXTFLOW_VERSION="25.10.4"
 REPO_URL="https://github.com/grp-bork/proMGEflow.git"
 
 INSTALL_DIR="$(readlink -m "$INSTALL_DIR")"
@@ -67,10 +68,15 @@ module load devel/miniforge
 source "$(conda info --base)/etc/profile.d/conda.sh"
 
 if conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
-    echo "[promgeflow] conda env '$ENV_NAME' already exists, skipping create"
+    echo "[promgeflow] conda env '$ENV_NAME' already exists"
+    current_version="$(conda run -n "$ENV_NAME" nextflow -v 2>/dev/null | awk '{print $3}')"
+    if [[ "$current_version" != "$NEXTFLOW_VERSION" ]]; then
+        echo "[promgeflow] nextflow is '${current_version:-missing}', installing $NEXTFLOW_VERSION"
+        conda install -y -n "$ENV_NAME" -c bioconda -c conda-forge "nextflow=$NEXTFLOW_VERSION"
+    fi
 else
-    echo "[promgeflow] creating conda env '$ENV_NAME' with nextflow"
-    conda create -y -n "$ENV_NAME" -c bioconda -c conda-forge nextflow
+    echo "[promgeflow] creating conda env '$ENV_NAME' with nextflow=$NEXTFLOW_VERSION"
+    conda create -y -n "$ENV_NAME" -c bioconda -c conda-forge "nextflow=$NEXTFLOW_VERSION"
 fi
 
 # ---------------------------------------------------------------------------
