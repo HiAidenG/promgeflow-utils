@@ -9,12 +9,29 @@
 #   4. sbatch a SLURM job that downloads all five reference databases
 #
 # Usage:
-#   ./install_progmgeflow.sh [INSTALL_DIR]
+#   ./install_progmgeflow.sh [INSTALL_DIR] [--skip-dbs]
 # Default INSTALL_DIR is "promgeflow" in the current working directory.
+# --skip-dbs writes the sbatch script but doesn't submit it (useful when DBs
+# are already downloaded, or when you want to inspect/submit it by hand).
 
 set -euo pipefail
 
-INSTALL_DIR="${1:-promgeflow}"
+INSTALL_DIR=""
+SKIP_DBS=0
+for arg in "$@"; do
+    case "$arg" in
+        --skip-dbs) SKIP_DBS=1 ;;
+        -h|--help)
+            sed -n '2,14p' "${BASH_SOURCE[0]}"
+            exit 0 ;;
+        --*)        echo "[promgeflow] unknown option: $arg" >&2; exit 2 ;;
+        *)
+            [[ -z "$INSTALL_DIR" ]] || { echo "[promgeflow] unexpected arg: $arg" >&2; exit 2; }
+            INSTALL_DIR="$arg" ;;
+    esac
+done
+INSTALL_DIR="${INSTALL_DIR:-promgeflow}"
+
 ENV_NAME="${PROMGE_ENV:-promgeflow}"
 NEXTFLOW_VERSION="25.10.4"
 REPO_URL="https://github.com/grp-bork/proMGEflow.git"
@@ -36,7 +53,7 @@ mkdir -p "$INSTALL_DIR"/{emapper_db,conjscan_models,recombinase_models,recognise
 mkdir -p "$LOG_DIR"
 
 # ---------------------------------------------------------------------------
-# 1. Clone the repository into $INSTALL_DIR/proMGEflow
+# 1. Clone proMGEflow repository into $INSTALL_DIR/proMGEflow
 # ---------------------------------------------------------------------------
 if [[ -d "$REPO_DIR/.git" ]]; then
     echo "[promgeflow] repo already cloned, skipping git clone"
@@ -55,7 +72,7 @@ fi
 ( cd "$CONJ_DIR" && git checkout d5fc1e3724362cb14c03a6e2f6de879bbdf3f64e )
 
 # ---------------------------------------------------------------------------
-# 2. Conda env with nextflow
+# 2a. Conda env with nextflow
 # ---------------------------------------------------------------------------
 echo "[promgeflow] loading miniforge"
 # Initialise the module system in non-interactive shells
@@ -85,9 +102,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2b. reCOGnise conda env (replaces the unreliable ghcr.io/grp-bork/recognise
-#     container). Built here on the login node because the env's pip layer
-#     git-clones reCOGnise — compute nodes don't have git.
+# 2b. reCOGnise conda env
 # ---------------------------------------------------------------------------
 [[ -f "$RECOGNISE_YML" ]] || { echo "[promgeflow] recognise env yml not found: $RECOGNISE_YML" >&2; exit 1; }
 
@@ -102,12 +117,62 @@ else
     fi
 fi
 
-# Sanity check: the entry points the nextflow processes will invoke.
-for bin in recognise prodigal mapseq fetchMGs; do
+# Idempotent backfill: ensure perl is installed even when re-running into an
+# existing env that predates the perl entry in recognise.yml. fetchMGs.pl
+# shebangs `#!/usr/bin/env perl` and we don't want to depend on the compute
+# node having a system perl on PATH.
+if ! "$RECOGNISE_ENV_PREFIX/bin/perl" -e1 2>/dev/null; then
+    echo "[promgeflow] installing perl into recognise env"
+    if command -v mamba >/dev/null 2>&1; then
+        mamba install -y -p "$RECOGNISE_ENV_PREFIX" -c conda-forge perl
+    else
+        conda install -y -p "$RECOGNISE_ENV_PREFIX" -c conda-forge perl
+    fi
+fi
+
+# fetchMGs.pl (motu-tool/fetchMGs.pl) — the Perl tool that reCOGnise calls
+# via subprocess when the python `fetchmgs` module is unimportable. We don't
+# install the python module (it forces pyhmmer==0.11.2 which conflicts with
+# reCOGnise's pyhmmer~=0.12)
+FETCHMGS_PL_DIR="$RECOGNISE_ENV_PREFIX/opt/fetchMGs.pl"
+FETCHMGS_PL_WRAPPER="$RECOGNISE_ENV_PREFIX/bin/fetchMGs.pl"
+if [[ -d "$FETCHMGS_PL_DIR/.git" ]]; then
+    echo "[promgeflow] fetchMGs.pl already cloned at $FETCHMGS_PL_DIR"
+else
+    echo "[promgeflow] cloning fetchMGs.pl into $FETCHMGS_PL_DIR"
+    mkdir -p "$(dirname "$FETCHMGS_PL_DIR")"
+    git clone https://github.com/motu-tool/fetchMGs.pl.git "$FETCHMGS_PL_DIR"
+fi
+chmod +x "$FETCHMGS_PL_DIR/fetchMGs.pl"
+
+# Wrapper resolves the real script relative to its own location so the env
+# stays relocatable. fetchMGs.pl itself uses FindBin to find sibling lib/ and
+# bin/ (bundled hmmsearch + seqtk), so we must invoke the script in place
+# rather than symlinking the bare file.
+cat > "$FETCHMGS_PL_WRAPPER" <<'WRAPPER'
+#!/usr/bin/env bash
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec "$HERE/opt/fetchMGs.pl/fetchMGs.pl" "$@"
+WRAPPER
+chmod +x "$FETCHMGS_PL_WRAPPER"
+
+# Sanity check: entry points the nextflow recognise processes will invoke.
+# `recognise` is from pip; prodigal/mapseq from bioconda; fetchMGs.pl from the
+# clone above.
+for bin in recognise prodigal mapseq fetchMGs.pl; do
     if [[ ! -x "$RECOGNISE_ENV_PREFIX/bin/$bin" ]]; then
         echo "[promgeflow] WARNING: $bin not found in $RECOGNISE_ENV_PREFIX/bin" >&2
     fi
 done
+
+# Belt-and-braces: if a prior install left the python `fetchmgs` package
+# importable, the import-guarded subprocess fallback in recognise won't fire
+# and we'll hit the pyhmmer .decode() bug. Strip it.
+if "$RECOGNISE_ENV_PREFIX/bin/python" -c "import fetchmgs" 2>/dev/null; then
+    echo "[promgeflow] removing stale python fetchmgs package from recognise env"
+    "$RECOGNISE_ENV_PREFIX/bin/pip" uninstall -y fetchmgs fetchMGs 2>/dev/null || true
+    "$RECOGNISE_ENV_PREFIX/bin/python" -m pip uninstall -y fetchmgs fetchMGs 2>/dev/null || true
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Write params.yml pointing at our database dirs
@@ -196,12 +261,18 @@ echo "[dbs] finished at \$(date)"
 EOF
 chmod +x "$SBATCH_SCRIPT"
 
-if command -v sbatch >/dev/null 2>&1; then
+if [[ "$SKIP_DBS" -eq 1 ]]; then
+    echo "[promgeflow] --skip-dbs set; not submitting the database download job"
+    echo "             submit it manually with: sbatch $SBATCH_SCRIPT"
+    DB_STATUS="(skipped via --skip-dbs; sbatch $SBATCH_SCRIPT to run)"
+elif command -v sbatch >/dev/null 2>&1; then
     echo "[promgeflow] submitting database download job"
     sbatch "$SBATCH_SCRIPT"
+    DB_STATUS="(downloads running via SLURM)"
 else
     echo "[promgeflow] sbatch not found; run the download script manually:"
     echo "             sbatch $SBATCH_SCRIPT"
+    DB_STATUS="(sbatch not found; run $SBATCH_SCRIPT manually)"
 fi
 
 cat <<EOF
@@ -209,7 +280,7 @@ cat <<EOF
   install:       $INSTALL_DIR
   repo:          $REPO_DIR
   databases:     $INSTALL_DIR/{emapper_db,conjscan_models,recombinase_models,recognise_markers,cluster_ref_seqs}
-                 (downloads running via SLURM)
+                 $DB_STATUS
   params:        $PARAMS_FILE
   recognise env: $RECOGNISE_ENV_PREFIX
   logs:          $LOG_DIR

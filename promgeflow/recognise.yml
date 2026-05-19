@@ -6,9 +6,16 @@ dependencies:
   - python=3.10
   - pip
   - git
-  # Pinned to match current main dockerfile (mapseq 1.2.6, fetchmgs 2.1.2).
+  - perl
+  # Pinned to match current main dockerfile (mapseq 1.2.6).
+  # NB: deliberately NOT installing the python `fetchmgs` package — it pins
+  # pyhmmer==0.11.2 which clashes with reCOGnise's pyhmmer~=0.12, and its
+  # extraction_genes() still calls hits.query.name.decode() which broke under
+  # pyhmmer 0.12. reCOGnise falls back to subprocessing fetchMGs.pl when the
+  # python import fails, which is the path we want. install_promgeflow.sh
+  # clones motu-tool/fetchMGs.pl into the env's opt/ and drops a wrapper in
+  # $PREFIX/bin/.
   - prodigal
   - mapseq=1.2.6
-  - fetchmgs=2.1.2
   - pip:
       - git+https://github.com/grp-bork/reCOGnise.git@main
