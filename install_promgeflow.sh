@@ -192,6 +192,35 @@ if [[ "$installed_recognise_ver" != "$RECOGNISE_VERSION" ]]; then
         "git+https://github.com/grp-bork/reCOGnise.git@v${RECOGNISE_VERSION}"
 fi
 
+# Idempotent backfill for existing envs that predate the hmmer/seqtk entries
+# in recognise.yml — fetchMGs.pl needs hmmsearch + seqtk on PATH (see patch
+# below).
+for tool in hmmsearch seqtk; do
+    if ! "$RECOGNISE_ENV_PREFIX/bin/$tool" -h >/dev/null 2>&1 \
+        && ! [[ -x "$RECOGNISE_ENV_PREFIX/bin/$tool" ]]; then
+        echo "[promgeflow] installing hmmer + seqtk into recognise env"
+        if command -v mamba >/dev/null 2>&1; then
+            mamba install -y -p "$RECOGNISE_ENV_PREFIX" -c bioconda -c conda-forge hmmer seqtk
+        else
+            conda install -y -p "$RECOGNISE_ENV_PREFIX" -c bioconda -c conda-forge hmmer seqtk
+        fi
+        break
+    fi
+done
+
+# v0.7.3 of reCOGnise hardcodes `-x /usr/bin` when shelling out to
+# fetchMGs.pl — only correct inside the upstream docker container. Rewrite
+# the literal to `-x ""`, which tells fetchMGs.pl to resolve hmmsearch +
+# seqtk via $PATH (where bioconda installs them in this env). Idempotent —
+# sed is a no-op once the file is already patched.
+for f in "$RECOGNISE_ENV_PREFIX"/lib/python*/site-packages/recognise/__main__.py; do
+    [[ -f "$f" ]] || continue
+    if grep -q '"-x", "/usr/bin"' "$f"; then
+        echo "[promgeflow] patching $f to drop hardcoded /usr/bin in fetchMGs.pl call"
+        sed -i 's|"-x", "/usr/bin"|"-x", ""|' "$f"
+    fi
+done
+
 # ---------------------------------------------------------------------------
 # 3. Write params.yml pointing at our database dirs
 # ---------------------------------------------------------------------------

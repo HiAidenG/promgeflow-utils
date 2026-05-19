@@ -12,5 +12,11 @@ dependencies:
   # pyhmmer==0.11.2 which clashes with reCOGnise's pyhmmer~=0.12.
   - prodigal
   - mapseq=1.2.6
+  # hmmer + seqtk are the executables fetchMGs.pl shells out to. Upstream
+  # reCOGnise v0.7.3 hardcodes `-x /usr/bin` for them (works in the docker
+  # image), so install_promgeflow.sh patches that to `-x ""` and we ship the
+  # binaries via bioconda so `$PATH` resolves them inside the env.
+  - hmmer
+  - seqtk
   - pip:
       - git+https://github.com/grp-bork/reCOGnise.git@v0.7.3
