@@ -34,6 +34,7 @@ INSTALL_DIR="${INSTALL_DIR:-promgeflow}"
 
 ENV_NAME="${PROMGE_ENV:-promgeflow}"
 NEXTFLOW_VERSION="25.10.4"
+RECOGNISE_VERSION="0.7.3"   # must match the pin in promgeflow/recognise.yml
 REPO_URL="https://github.com/grp-bork/proMGEflow.git"
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -92,7 +93,9 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 if conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
     echo "[promgeflow] conda env '$ENV_NAME' already exists"
     current_version="$(conda run -n "$ENV_NAME" nextflow -v 2>/dev/null | awk '{print $3}')"
-    if [[ "$current_version" != "$NEXTFLOW_VERSION" ]]; then
+    # Accept both the bare version (25.10.4) and dotted build suffixes
+    # (e.g. 25.10.4.11173) — same upstream release, just a distribution tag.
+    if [[ "$current_version" != "$NEXTFLOW_VERSION" && "$current_version" != "$NEXTFLOW_VERSION".* ]]; then
         echo "[promgeflow] nextflow is '${current_version:-missing}', installing $NEXTFLOW_VERSION"
         conda install -y -n "$ENV_NAME" -c bioconda -c conda-forge "nextflow=$NEXTFLOW_VERSION"
     fi
@@ -174,6 +177,21 @@ if "$RECOGNISE_ENV_PREFIX/bin/python" -c "import fetchmgs" 2>/dev/null; then
     "$RECOGNISE_ENV_PREFIX/bin/python" -m pip uninstall -y fetchmgs fetchMGs 2>/dev/null || true
 fi
 
+# Ensure reCOGnise is at the pinned version. main has gated specI.txt /
+# specI.status output behind a new --with_sentinels flag that proMGEflow's
+# recognise.nf doesn't pass, so anything newer than v0.7.3 silently leaves
+# those files unwritten and downstream processes mark every genome unknown.
+installed_recognise_ver="$(
+    "$RECOGNISE_ENV_PREFIX/bin/python" -c \
+        "import recognise; print(getattr(recognise, '__version__', ''))" 2>/dev/null \
+        | tr -d '[:space:]'
+)"
+if [[ "$installed_recognise_ver" != "$RECOGNISE_VERSION" ]]; then
+    echo "[promgeflow] recognise is '${installed_recognise_ver:-missing}', pinning to $RECOGNISE_VERSION"
+    "$RECOGNISE_ENV_PREFIX/bin/pip" install --no-deps --force-reinstall \
+        "git+https://github.com/grp-bork/reCOGnise.git@v${RECOGNISE_VERSION}"
+fi
+
 # ---------------------------------------------------------------------------
 # 3. Write params.yml pointing at our database dirs
 # ---------------------------------------------------------------------------
@@ -192,7 +210,9 @@ output_dir: "output/"
 prodigal_batch_size: 10
 
 ### RECOGNISE
-recognise_marker_db: "$INSTALL_DIR/recognise_markers"
+# Points one level into the tarball's wrapper dir — recognise passes this
+# straight to mapseq, which opens <marker_db>/COG*.fna directly.
+recognise_marker_db: "$INSTALL_DIR/recognise_markers/recognise_markers"
 recognise_marker_set: "motus"
 
 ### RECOMBINASE_SCAN
@@ -248,6 +268,8 @@ wget -c https://zenodo.org/records/15829523/files/promge_v1_recombinase_models.h
 [[ -f promge_v1_recombinase_models.hmm ]] || gunzip -f promge_v1_recombinase_models.hmm.gz
 
 # --- 4) reCOGnise marker set (~1 GB) -------------------------------------
+# The tarball expands a top-level recognise_markers/ wrapper, so the COG*.fna
+# files end up at \$ROOT/recognise_markers/recognise_markers/
 cd "\$ROOT/recognise_markers"
 wget -c https://zenodo.org/records/17916463/files/recognise_markers.tar.gz
 tar xvzf recognise_markers.tar.gz
